@@ -1,34 +1,75 @@
 services:
   ollama:
-    volumes:
-      - ollama:/root/.ollama
     container_name: ollama
     pull_policy: always
     tty: true
     restart: unless-stopped
-    image: ollama/ollama:${OLLAMA_DOCKER_TAG-latest}
+    image: ollama/ollama:${OLLAMA_DOCKER_TAG-latest} # Uses environment variable for Ollama Docker tag, defaults to 'latest' if not set
+    volumes:
+      - ollama:/root/.ollama # Volume for Ollama models and data
+    ports:
+      - "11434:11434" # Exposes Ollama API port to host - access at http://localhost:11434
+    networks:
+      - open-webui-network
+    deploy: # GPU support configuration - using environment variables for flexibility
+      resources:
+        reservations:
+          devices:
+            - driver: ${OLLAMA_GPU_DRIVER-nvidia} # Uses environment variable OLLAMA_GPU_DRIVER, defaults to 'nvidia' if not set (for NVIDIA GPU)
+              count: ${OLLAMA_GPU_COUNT-1}       # Uses environment variable OLLAMA_GPU_COUNT, defaults to '1' if not set (requests 1 GPU)
+              capabilities:
+                - gpu
 
   open-webui:
     build:
-      context: .
+      context: . # Assumes Dockerfile is in the same directory as docker-compose.yaml
       args:
-        OLLAMA_BASE_URL: '/ollama'
-      dockerfile: Dockerfile
-    image: ghcr.io/open-webui/open-webui:${WEBUI_DOCKER_TAG-main}
+        OLLAMA_BASE_URL: '/ollama' # Base URL for Ollama inside the Docker network
+      dockerfile: Dockerfile # Specifies the Dockerfile to use for building OpenWebUI image
+    image: ghcr.io/open-webui/open-webui:${WEBUI_DOCKER_TAG-main} # Uses environment variable for OpenWebUI Docker tag, defaults to 'main' if not set
     container_name: open-webui
     volumes:
-      - open-webui:/app/backend/data
+      - open-webui:/app/backend/data # Volume for OpenWebUI persistent data
     depends_on:
-      - ollama
+      - ollama # OpenWebUI service depends on Ollama service starting first
     ports:
-      - ${OPEN_WEBUI_PORT-3000}:8080
+      - ${OPEN_WEBUI_PORT-3000}:8080 # Exposes OpenWebUI port to host, uses environment variable OPEN_WEBUI_PORT, defaults to 3000 if not set - access at http://localhost:3000 (or specified port)
     environment:
-      - 'OLLAMA_BASE_URL=http://ollama:11434'
-      - 'WEBUI_SECRET_KEY='
+      - 'OLLAMA_BASE_URL=http://ollama:11434' # Sets Ollama base URL for OpenWebUI to connect to Ollama service within Docker network
+      - 'WEBUI_SECRET_KEY=' # You should ideally set a secret key for production, but it's optional for basic setup
     extra_hosts:
-      - host.docker.internal:host-gateway
-    restart: unless-stopped
+      - host.docker.internal:host-gateway # Allows OpenWebUI to access host machine's resources if needed (not strictly necessary for basic setup)
+    networks:
+      - open-webui-network
+
+  pipelines: # <-- ADDED PIPELINES SERVICE HERE
+    container_name: pipelines
+    image: ghcr.io/open-webui/pipelines:main # Standard Pipelines image
+    ports:
+      - "9099:9099" # Expose Pipelines port
+    volumes:
+      - D:/pipelines/pipelines:/app/pipelines # <-- MAKE SURE THIS PATH IS CORRECT
+      - D:/pipelines/pipelines/requirements.txt:/app/requirements.txt # <-- MAKE SURE THIS PATH IS CORRECT
+    environment:
+      - RESET_PIPELINES_DIR=false
+      - PIPELINES_REQUIREMENTS_PATH=/app/requirements.txt
+      - PIPELINES_URLS="https://raw.githubusercontent.com/open-webui/pipelines/refs/heads/main/examples/pipelines/integrations/python_code_pipeline.py" # Example URL
+    networks:
+      - open-webui-network # VERY IMPORTANT: Same network as ollama & open-webui
+    deploy: # GPU - adjust if needed
+      resources:
+        reservations:
+          devices:
+            - driver: ${PIPELINES_GPU_DRIVER-nvidia} # Environment variable - defaults to nvidia
+              count: ${PIPELINES_GPU_COUNT-1} # Environment variable - defaults to 1
+              capabilities:
+                - gpu
+    restart: always
 
 volumes:
-  ollama: {}
-  open-webui: {}
+  ollama: {} # Defines the 'ollama' volume
+  open-webui: {} # Defines the 'open-webui' volume
+
+networks:
+  open-webui-network: # Defines the Docker network for inter-container communication
+    driver: bridge # Uses the bridge network driver - standard for Docker Compose
